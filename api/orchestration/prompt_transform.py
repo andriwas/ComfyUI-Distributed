@@ -350,7 +350,17 @@ def prune_prompt_for_worker(prompt_obj):
             continue
         downstream = _find_downstream_nodes(prompt_obj, [dist_id])
         has_removed_downstream = any(node_id != dist_id for node_id in downstream)
-        if has_removed_downstream:
+        collector = pruned_prompt[dist_id]
+        collector_inputs = collector.get("inputs", {})
+        
+        image_input = collector_inputs.get("images")
+        
+        # Only auto-preview if an image is actually connected.
+        if (
+            has_removed_downstream
+            and isinstance(image_input, list)
+            and len(image_input) == 2
+        ):
             preview_id = next_id()
             pruned_prompt[preview_id] = {
                 "inputs": {
