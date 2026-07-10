@@ -272,8 +272,10 @@ async def check_file_endpoint(request):
 
 @server.PromptServer.instance.routes.post("/distributed/job_complete")
 async def job_complete_endpoint(request):
+    print("JOB_COMPLETE RECEIVED")
     try:
         data = await request.json()
+        print("JOB_COMPLETE JSON PARSED")
     except Exception as exc:
         return await handle_api_error(request, f"Invalid JSON payload: {exc}", 400)
 
@@ -295,8 +297,11 @@ async def job_complete_endpoint(request):
             errors.append("worker_id: expected non-empty string")
         if not isinstance(batch_idx, int) or batch_idx < 0:
             errors.append("batch_idx: expected non-negative integer")
-        if not isinstance(image_payload, str) or not image_payload.strip():
-            errors.append("image: expected non-empty base64 PNG string")
+        if (
+            (image_payload is None or image_payload == "")
+            and audio_payload is None
+        ):
+            errors.append("Either image or audio must be provided.")
         if audio_payload is not None and not isinstance(audio_payload, dict):
             errors.append("audio: expected object when provided")
         if not isinstance(is_last, bool):
@@ -304,7 +309,11 @@ async def job_complete_endpoint(request):
         if errors:
             return await handle_api_error(request, errors, 400)
 
-        tensor = _decode_canonical_png_tensor(image_payload)
+        tensor = (
+            _decode_canonical_png_tensor(image_payload)
+            if image_payload
+            else None
+        )
         decoded_audio = _decode_audio_payload(audio_payload) if audio_payload is not None else None
         multi_job_id = job_id.strip()
         worker_id = worker_id.strip()
