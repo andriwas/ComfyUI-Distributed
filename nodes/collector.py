@@ -104,7 +104,7 @@ class DistributedCollectorNode:
             return None
         return {"waveform": torch.cat(waveforms, dim=-1), "sample_rate": sample_rate}
 
-    def run(self, images, load_balance=False, audio=None, multi_job_id="", is_worker=False, master_url="", enabled_worker_ids="[]", worker_batch_size=1, worker_id="", pass_through=False, delegate_only=False):
+    def run(self, images=None, load_balance=False, audio=None, multi_job_id="", is_worker=False, master_url="", enabled_worker_ids="[]", worker_batch_size=1, worker_id="", pass_through=False, delegate_only=False):
         if images is not None:
             images = self._normalize_images_input(images)
         audio = self._normalize_audio_input(audio)
@@ -145,16 +145,15 @@ class DistributedCollectorNode:
 
     async def send_batch_to_master(self, image_batch, audio, multi_job_id, master_url, worker_id):
         """Send image batch to master via canonical JSON envelopes."""
-        batch_size = 0 if image_batch is None else image_batch.shape[0]
-        if batch_size == 0:
-            return
 
         encoded_audio = encode_audio_payload(audio)
 
         session = await get_client_session()
         url = f"{master_url}/distributed/job_complete"
 
-        # Audio-only workflow
+        #
+        # AUDIO ONLY
+        #
         if image_batch is None:
             payload = {
                 "job_id": str(multi_job_id),
@@ -169,11 +168,15 @@ class DistributedCollectorNode:
             async with session.post(
                 url,
                 json=payload,
-                timeout=aiohttp.ClientTimeout(total=60),
+                timeout=aiohttp.ClientTimeout(total=600),
             ) as response:
                 response.raise_for_status()
 
             return
+
+        #
+        # IMAGE PATH
+        #
 
         batch_size = image_batch.shape[0]
         for batch_idx in range(batch_size):
@@ -315,12 +318,16 @@ class DistributedCollectorNode:
 
         if cpu_tensors:
             return ensure_contiguous(torch.cat(cpu_tensors, dim=0))
-        elif fallback_images is not None:
-            return ensure_contiguous(fallback_images)
-        else:
-            raise ValueError("No image data collected from master or workers")
 
-    async def execute(self, images, audio, load_balance=False, multi_job_id="", is_worker=False, master_url="", enabled_worker_ids="[]", worker_batch_size=1, worker_id="", delegate_only=False):
+        if fallback_images is not None:
+            return ensure_contiguous(fallback_images)
+
+        #
+        # AUDIO ONLY
+        #
+        return None
+
+    async def execute(self, images=None, audio=None, load_balance=False, multi_job_id="", is_worker=False, master_url="", enabled_worker_ids="[]", worker_batch_size=1, worker_id="", delegate_only=False):
         if is_worker:
             # Worker mode: send images and audio to master in a single batch
             image_count = 0 if images is None else images.shape[0]
@@ -359,7 +366,6 @@ class DistributedCollectorNode:
                 master_audio = None
                 debug_log(f"Master - Job {multi_job_id}: Delegate-only mode enabled, collecting exclusively from {num_workers} workers")
             else:
-                images_on_cpu = images.cpu()
                 if images is None:
                     images_on_cpu = None
                     master_batch_size = 0
@@ -547,8 +553,15 @@ class DistributedCollectorNode:
                 combined = self._reorder_and_combine_tensors(
                     worker_images, enabled_workers, master_batch_size, images_on_cpu, delegate_mode, images
                 )
-                debug_log(f"Master - Job {multi_job_id} complete. Combined {combined.shape[0]} images total "
-                          f"(master: {master_batch_size}, workers: {combined.shape[0] - master_batch_size})")
+                if combined is None:
+                    debug_log(
+                        f"Master - Audio-only workflow completed."
+                    )
+                else:
+                    debug_log(
+                        f"Master - Job {multi_job_id} complete. Combined {combined.shape[0]} images total "
+                        f"(master: {master_batch_size}, workers: {combined.shape[0]-master_batch_size})"
+                    )
 
                 # Combine audio from master and workers
                 combined_audio = self._combine_audio(master_audio, worker_audio, self.EMPTY_AUDIO, enabled_workers)
