@@ -29,7 +29,6 @@ class DistributedCollectorNode:
     def INPUT_TYPES(s):
         return {
             "required": {
-                "images": ("IMAGE",),
                 "load_balance": (
                     "BOOLEAN",
                     {
@@ -38,7 +37,10 @@ class DistributedCollectorNode:
                     },
                 ),
             },
-            "optional": { "audio": ("AUDIO",) },
+            "optional": {
+                "images": ("IMAGE",),
+                "audio": ("AUDIO",),
+            },
             "hidden": {
                 "multi_job_id": ("STRING", {"default": ""}),
                 "is_worker": ("BOOLEAN", {"default": False}),
@@ -103,7 +105,8 @@ class DistributedCollectorNode:
         return {"waveform": torch.cat(waveforms, dim=-1), "sample_rate": sample_rate}
 
     def run(self, images, load_balance=False, audio=None, multi_job_id="", is_worker=False, master_url="", enabled_worker_ids="[]", worker_batch_size=1, worker_id="", pass_through=False, delegate_only=False):
-        images = self._normalize_images_input(images)
+        if images is not None:
+            images = self._normalize_images_input(images)
         audio = self._normalize_audio_input(audio)
         load_balance = self._unwrap_list_input(load_balance)
         multi_job_id = self._unwrap_list_input(multi_job_id)
@@ -142,7 +145,7 @@ class DistributedCollectorNode:
 
     async def send_batch_to_master(self, image_batch, audio, multi_job_id, master_url, worker_id):
         """Send image batch to master via canonical JSON envelopes."""
-        batch_size = image_batch.shape[0]
+        batch_size = 0 if image_batch is None else image_batch.shape[0]
         if batch_size == 0:
             return
 
@@ -150,6 +153,29 @@ class DistributedCollectorNode:
 
         session = await get_client_session()
         url = f"{master_url}/distributed/job_complete"
+
+        # Audio-only workflow
+        if image_batch is None:
+            payload = {
+                "job_id": str(multi_job_id),
+                "worker_id": str(worker_id),
+                "batch_idx": 0,
+                "is_last": True,
+            }
+
+            if encoded_audio is not None:
+                payload["audio"] = encoded_audio
+
+            async with session.post(
+                url,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=60),
+            ) as response:
+                response.raise_for_status()
+
+            return
+
+        batch_size = image_batch.shape[0]
         for batch_idx in range(batch_size):
             img = tensor_to_pil(image_batch[batch_idx:batch_idx+1], 0)
             byte_io = io.BytesIO()
@@ -297,7 +323,8 @@ class DistributedCollectorNode:
     async def execute(self, images, audio, load_balance=False, multi_job_id="", is_worker=False, master_url="", enabled_worker_ids="[]", worker_batch_size=1, worker_id="", delegate_only=False):
         if is_worker:
             # Worker mode: send images and audio to master in a single batch
-            debug_log(f"Worker - Job {multi_job_id} complete. Sending {images.shape[0]} image(s) to master")
+            image_count = 0 if images is None else images.shape[0]
+            debug_log(f"Worker - Job {multi_job_id} complete. Sending {image_count} image(s) to master")
             await self.send_batch_to_master(images, audio, multi_job_id, master_url, worker_id)
             return (images, audio if audio is not None else self.EMPTY_AUDIO)
         else:
@@ -333,7 +360,12 @@ class DistributedCollectorNode:
                 debug_log(f"Master - Job {multi_job_id}: Delegate-only mode enabled, collecting exclusively from {num_workers} workers")
             else:
                 images_on_cpu = images.cpu()
-                master_batch_size = images.shape[0]
+                if images is None:
+                    images_on_cpu = None
+                    master_batch_size = 0
+                else:
+                    images_on_cpu = ensure_contiguous(images.cpu())
+                    master_batch_size = images.shape[0]
                 master_audio = audio  # Keep master's audio for later
                 debug_log(f"Master - Job {multi_job_id}: Master has {master_batch_size} images, collecting from {num_workers} workers...")
 
