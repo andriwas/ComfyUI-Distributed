@@ -352,25 +352,48 @@ def prune_prompt_for_worker(prompt_obj):
         has_removed_downstream = any(node_id != dist_id for node_id in downstream)
         collector = pruned_prompt[dist_id]
         collector_inputs = collector.get("inputs", {})
-        
+        print("collector inputs =", collector_inputs)
+        print(prompt_obj[str(dist_id)]["inputs"])
         image_input = collector_inputs.get("images")
         
-        # Only auto-preview if an image is actually connected.
-        if (
-            has_removed_downstream
-            and isinstance(image_input, list)
-            and len(image_input) == 2
-        ):
+        collector = prompt_obj[str(dist_id)]
+        inputs = collector.get("inputs", {})
+
+        image_connected = (
+            isinstance(inputs.get("images"), list)
+            and len(inputs["images"]) == 2
+        )
+
+        audio_connected = (
+            isinstance(inputs.get("audio"), list)
+            and len(inputs["audio"]) == 2
+        )
+
+        if has_removed_downstream:
+
             preview_id = next_id()
-            pruned_prompt[preview_id] = {
-                "inputs": {
-                    "images": [dist_id, 0],
-                },
-                "class_type": "PreviewImage",
-                "_meta": {
-                    "title": "Preview Image (auto-added)",
-                },
-            }
+
+            if image_connected:
+                pruned_prompt[preview_id] = {
+                    "inputs": {
+                        "images": [dist_id, 0],
+                    },
+                    "class_type": "PreviewImage",
+                    "_meta": {
+                        "title": "Preview Image (auto-added)",
+                    },
+                }
+
+            elif audio_connected:
+                pruned_prompt[preview_id] = {
+                    "inputs": {
+                        "audio": [dist_id, 1],
+                    },
+                    "class_type": "PreviewAudio",
+                    "_meta": {
+                        "title": "Preview Audio (auto-added)",
+                    },
+                }
 
     return pruned_prompt
 
